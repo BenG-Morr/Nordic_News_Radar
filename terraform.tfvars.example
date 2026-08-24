@@ -1,0 +1,10 @@
+# Datei kopieren als terraform.tfvars und dort die eigene Adresse eintragen.
+# terraform.tfvars wird durch .gitignore nicht versioniert.
+budget_email = "deine-adresse@example.com"
+
+# Optional während der Entwicklung deaktivieren:
+# scheduler_enabled = false
+
+# Optional andere tägliche Uhrzeit:
+# schedule_expression = "cron(0 7 * * ? *)"
+# schedule_timezone   = "Europe/Berlin"
