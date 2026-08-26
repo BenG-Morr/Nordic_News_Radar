@@ -23,9 +23,6 @@ resource "aws_lambda_function" "processor" {
   memory_size = 512
   timeout     = 300
 
-  # Verhindert parallele Tagesläufe und begrenzt gleichzeitig das Kostenrisiko.
-  reserved_concurrent_executions = 1
-
   environment {
     variables = {
       DATA_BUCKET                  = aws_s3_bucket.data.bucket
@@ -34,6 +31,7 @@ resource "aws_lambda_function" "processor" {
       ARCHIVE_RETENTION_DAYS       = tostring(var.archive_retention_days)
       BEDROCK_INFERENCE_PROFILE_ID = var.bedrock_inference_profile_id
       BEDROCK_REGION               = var.aws_region
+      NEWS_FEEDS_JSON              = jsonencode(local.news_feeds)
     }
   }
 

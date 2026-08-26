@@ -4,3 +4,8 @@
 *.tfplan
 terraform.tfvars
 lambda_src.zip
+
+__pycache__/
+*.pyc
+
+response.json
