@@ -82,14 +82,14 @@ resource "aws_s3_bucket_lifecycle_configuration" "data_archive" {
   }
 }
 
-# Ein minimales Start-Frontend macht die CloudFront-Bereitstellung direkt testbar.
-# Die eigentliche Dashboard-Oberfläche wird in einem nächsten Umsetzungsschritt ersetzt.
+# Das responsive Dashboard wird als statische HTML-Datei im privaten Frontend-Bucket bereitgestellt.
 resource "aws_s3_object" "frontend_index" {
-  bucket       = aws_s3_bucket.frontend.id
-  key          = "index.html"
-  source       = "${path.module}/frontend/index.html"
-  etag         = filemd5("${path.module}/frontend/index.html")
-  content_type = "text/html; charset=utf-8"
+  bucket        = aws_s3_bucket.frontend.id
+  key           = "index.html"
+  source        = "${path.module}/frontend/index.html"
+  etag          = filemd5("${path.module}/frontend/index.html")
+  content_type  = "text/html; charset=utf-8"
+  cache_control = "max-age=300"
 
   depends_on = [
     aws_s3_bucket_server_side_encryption_configuration.frontend,
