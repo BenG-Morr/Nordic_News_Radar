@@ -52,8 +52,10 @@ MAX_DESCRIPTION_CHARS = 650
 MAX_FEED_BYTES = 2_000_000
 MAX_CANDIDATE_TOPICS = 12
 MIN_CANDIDATE_TOPICS = 8
+MIN_CANDIDATES_PER_COUNTRY = 4
 MAX_TOPICS = 8
 MIN_TOPICS_PER_COUNTRY = 3
+MAX_RAW_GROUPINGS = 24
 
 HTTP_TIMEOUT_SECONDS = 12
 USER_AGENT = "NordicNewsRadar/1.0 (student cloud project; RSS/Atom metadata only)"
@@ -257,7 +259,7 @@ def _collect_articles(now_utc: datetime) -> tuple[list[dict[str, Any]], list[dic
     return balanced, failures, successful_by_country
 
 
-def _build_prompt(articles: list[dict[str, Any]]) -> str:
+def _build_grouping_prompt(articles: list[dict[str, Any]]) -> str:
     model_input = [
         {
             "id": article["id"],
@@ -271,36 +273,58 @@ def _build_prompt(articles: list[dict[str, Any]]) -> str:
     ]
 
     return (
-        "Erstelle aus den folgenden RSS-/Atom-Metadaten Kandidaten für einen täglichen Nachrichtenüberblick "
-        "über Themen, die in schwedischen und finnischen Medien präsent sind. Bündele Meldungen nur dann, wenn "
-        "sie dasselbe Ereignis oder eindeutig dasselbe Thema behandeln. Teile dasselbe Ereignis nicht künstlich "
-        "in mehrere Themen auf und fasse unterschiedliche Ereignisse niemals nur deshalb zusammen, um eine "
-        "bestimmte Kandidatenzahl zu erreichen.\n\n"
-        f"Ziel sind {MIN_CANDIDATE_TOPICS} bis {MAX_CANDIDATE_TOPICS} unterschiedliche Kandidatenthemen. "
-        f"Liefere mindestens {MIN_CANDIDATE_TOPICS}, sofern die Eingabedaten mindestens so viele unterscheidbare "
-        "Ereignisse oder Themen enthalten. Ein Thema muss NICHT in mehreren Medien vorkommen: Wenn es weniger "
-        "als acht medienübergreifende Themen gibt, nimm relevante Einzelmeldungen ausdrücklich als eigenständige "
-        "Kandidaten auf, bis mindestens acht Kandidaten erreicht sind. Berücksichtige beide Länder und liefere, "
-        "wenn die Eingabedaten es zulassen, mindestens vier Kandidaten mit mindestens einer schwedischen Meldung "
-        "und mindestens vier Kandidaten mit mindestens einer finnischen Meldung. Die endgültige Rangfolge wird "
-        "später deterministisch berechnet; sortiere daher nicht nach eigener Wichtigkeit.\n\n"
-        "Formuliere ausschließlich auf Deutsch und streng quellengebunden. Für headline_de und summary_de darfst "
-        "du nur Informationen verwenden, die ausdrücklich in Titel oder Kurzbeschreibung der zugeordneten "
-        "source_ids vorkommen. Füge insbesondere keine Ereignisart, Ursache, Person, Zahl, Ortsangabe oder "
-        "Bewertung hinzu, die dort nicht belegt ist. Wenn die Metadaten unklar oder widersprüchlich sind, formuliere "
-        "allgemeiner statt eine Lücke zu ergänzen. Die Überschrift soll nüchtern und möglichst nahe an den "
-        "Quelltiteln bleiben. Setze keinen Länderpräfix wie 'Schweden:' oder 'Finnland:' vor die Überschrift; dieser "
-        "wird später durch das Programm ergänzt. Erfinde keine Fakten und verwende ausschließlich die "
-        "bereitgestellten Meldungen.\n\n"
-        f"Gib höchstens {MAX_CANDIDATE_TOPICS} Kandidatenthemen zurück. Für jedes Thema dürfen nur IDs aus den "
-        "Eingabedaten als source_ids verwendet werden. Verwende eine source_id nicht in mehreren Themen. Ordne "
-        "bei einem medienübergreifenden Ereignis alle eindeutig passenden Meldungen demselben Kandidaten zu; "
-        "ansonsten darf ein Kandidat auch nur eine source_id enthalten. Antworte ausschließlich mit gültigem JSON "
+        "Gruppiere die folgenden RSS-/Atom-Metadaten nach Ereignissen oder eindeutig identischen Themen. "
+        "Deine einzige fachliche Aufgabe in diesem Schritt ist die semantische Gruppierung; schreibe noch keine "
+        "Überschriften und keine Zusammenfassungen. Bündele Meldungen nur dann, wenn sie tatsächlich dasselbe "
+        "Ereignis oder eindeutig dasselbe Thema behandeln. Verschiedene Ereignisse dürfen nicht zusammengelegt "
+        "werden. Ein Kandidat darf auch nur eine Meldung enthalten.\n\n"
+        f"Ziel sind {MIN_CANDIDATE_TOPICS} bis {MAX_CANDIDATE_TOPICS} Kandidatengruppen, sofern die Eingabedaten "
+        "genügend unterscheidbare Themen enthalten. Berücksichtige Meldungen aus Schweden und Finnland. Die spätere "
+        "Auswahl, Länderbalance und Rangfolge übernimmt das Programm deterministisch.\n\n"
+        f"Verwende ausschließlich IDs aus den Eingabedaten. Eine source_id darf höchstens einer Gruppe zugeordnet "
+        f"werden. Gib höchstens {MAX_CANDIDATE_TOPICS} Gruppen zurück. Antworte ausschließlich mit gültigem JSON "
         "ohne Markdown oder zusätzlichen Text, genau in dieser Struktur:\n"
-        '{"topics":[{"headline_de":"...","summary_de":"1-2 kurze, nüchterne Sätze",'
-        '"source_ids":["A001","A002"]}]}\n\n'
+        '{"topics":[{"source_ids":["A001","A002"]}]}\n\n'
         "Eingabedaten:\n"
         + json.dumps(model_input, ensure_ascii=False, separators=(",", ":"))
+    )
+
+
+def _build_text_prompt(selected: list[dict[str, Any]]) -> str:
+    topics_input = []
+    for index, topic in enumerate(selected, start=1):
+        topic_id = f"T{index:03d}"
+        topic["topic_id"] = topic_id
+        topics_input.append(
+            {
+                "topic_id": topic_id,
+                "sources": [
+                    {
+                        "country": source["country"],
+                        "source": source["source"],
+                        "title": source["title"],
+                        "description": source.get("description", ""),
+                    }
+                    for source in topic["sources"]
+                ],
+            }
+        )
+
+    return (
+        "Formuliere für jede der folgenden bereits festgelegten Nachrichtengruppen genau eine deutsche Überschrift "
+        "und eine kurze deutsche Zusammenfassung. Die Gruppierung und Reihenfolge dürfen nicht verändert werden. "
+        "Alle Texte müssen auf Deutsch sein; kopiere schwedische oder finnische Quelltitel nicht unverändert.\n\n"
+        "Verwende ausschließlich Informationen, die ausdrücklich in Titel oder Kurzbeschreibung der jeweiligen "
+        "Quellen stehen. Füge keine Ereignisart, Ursache, Person, Zahl, Ortsangabe oder Bewertung hinzu, die dort "
+        "nicht belegt ist. Wenn Angaben unklar oder widersprüchlich sind, formuliere allgemeiner. Die Überschrift "
+        "soll nüchtern und möglichst nah am belegten Inhalt bleiben. Die Zusammenfassung umfasst 1-2 kurze Sätze. "
+        "Setze keinen Länderpräfix wie 'Schweden:' oder 'Finnland:' vor die Überschrift; dieser wird später durch "
+        "das Programm ergänzt.\n\n"
+        "Gib für JEDES bereitgestellte topic_id genau einen Eintrag zurück und erfinde keine topic_id. Antworte "
+        "ausschließlich mit gültigem JSON ohne Markdown oder zusätzlichen Text, genau in dieser Struktur:\n"
+        '{"topics":[{"topic_id":"T001","headline_de":"...","summary_de":"..."}]}\n\n'
+        "Festgelegte Nachrichtengruppen:\n"
+        + json.dumps(topics_input, ensure_ascii=False, separators=(",", ":"))
     )
 
 
@@ -318,8 +342,6 @@ def _parse_model_json(text: str) -> dict[str, Any]:
     try:
         parsed = json.loads(cleaned)
     except json.JSONDecodeError as first_error:
-        # If the model added a short sentence before/after the JSON, decode the
-        # first complete JSON object instead of rejecting an otherwise valid result.
         object_start = cleaned.find("{")
         if object_start == -1:
             raise first_error
@@ -340,19 +362,16 @@ def _usage_add(total: dict[str, int], usage: dict[str, Any]) -> None:
             total[key] = total.get(key, 0) + value
 
 
-def _invoke_bedrock(articles: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[str, int]]:
-    base_prompt = _build_prompt(articles)
+def _converse_json(prompt: str, stage: str, max_tokens: int) -> tuple[dict[str, Any], dict[str, int]]:
     total_usage: dict[str, int] = {"inputTokens": 0, "outputTokens": 0, "totalTokens": 0}
 
     for attempt in (1, 2):
-        prompt = base_prompt
+        current_prompt = prompt
         if attempt == 2:
-            prompt = (
-                "Der vorige Modellversuch konnte nicht als gültiges JSON verarbeitet werden. "
-                "Erzeuge die Antwort vollständig neu und antworte ausschließlich mit EINEM vollständigen "
-                "JSON-Objekt. Kein Markdown, keine Einleitung, kein Nachsatz. Halte summary_de besonders kurz "
-                "(1-2 Sätze), damit das JSON vollständig abgeschlossen wird.\n\n"
-                + base_prompt
+            current_prompt = (
+                "Der vorige Modellversuch konnte nicht als gültiges JSON verarbeitet werden. Erzeuge die Antwort "
+                "vollständig neu und antworte ausschließlich mit EINEM vollständigen JSON-Objekt. Kein Markdown, "
+                "keine Einleitung und kein Nachsatz.\n\n" + prompt
             )
 
         response = BEDROCK.converse(
@@ -367,8 +386,8 @@ def _invoke_bedrock(articles: list[dict[str, Any]]) -> tuple[dict[str, Any], dic
                     )
                 }
             ],
-            messages=[{"role": "user", "content": [{"text": prompt}]}],
-            inferenceConfig={"maxTokens": 4800, "temperature": 0.0, "topP": 0.9},
+            messages=[{"role": "user", "content": [{"text": current_prompt}]}],
+            inferenceConfig={"maxTokens": max_tokens, "temperature": 0.0, "topP": 0.9},
         )
 
         usage = response.get("usage", {})
@@ -378,7 +397,8 @@ def _invoke_bedrock(articles: list[dict[str, Any]]) -> tuple[dict[str, Any], dic
         model_text = next((block.get("text") for block in content if block.get("text")), None)
         if not model_text:
             LOGGER.warning(
-                "Bedrock attempt=%d returned no text; stop_reason=%s; input=%s output=%s total=%s tokens",
+                "%s attempt=%d returned no text; stop_reason=%s; input=%s output=%s total=%s tokens",
+                stage,
                 attempt,
                 stop_reason,
                 usage.get("inputTokens"),
@@ -387,15 +407,16 @@ def _invoke_bedrock(articles: list[dict[str, Any]]) -> tuple[dict[str, Any], dic
             )
             if attempt == 1:
                 continue
-            raise ValueError("Bedrock returned no text output after 2 attempts")
+            raise ValueError(f"Bedrock {stage} returned no text output after 2 attempts")
 
         try:
             parsed = _parse_model_json(model_text)
         except (json.JSONDecodeError, ValueError) as exc:
             cleaned = _strip_model_fences(model_text)
             LOGGER.warning(
-                "Bedrock attempt=%d returned invalid JSON; stop_reason=%s; output_chars=%d; "
+                "%s attempt=%d returned invalid JSON; stop_reason=%s; output_chars=%d; "
                 "input=%s output=%s total=%s tokens; prefix=%r; suffix=%r",
+                stage,
                 attempt,
                 stop_reason,
                 len(cleaned),
@@ -407,14 +428,15 @@ def _invoke_bedrock(articles: list[dict[str, Any]]) -> tuple[dict[str, Any], dic
             )
             if attempt == 1:
                 continue
-            raise ValueError("Bedrock output is not valid JSON after 2 attempts") from exc
+            raise ValueError(f"Bedrock {stage} output is not valid JSON after 2 attempts") from exc
 
         raw_topics = parsed.get("topics", [])
         raw_topic_count = len(raw_topics) if isinstance(raw_topics, list) else 0
         total_usage["attempts"] = attempt
         LOGGER.info(
-            "Bedrock succeeded on attempt=%d: stop_reason=%s; raw_candidate_topics=%d; "
+            "%s succeeded on attempt=%d: stop_reason=%s; raw_topics=%d; "
             "attempt_tokens(input=%s output=%s total=%s); cumulative_total_tokens=%s",
+            stage,
             attempt,
             stop_reason,
             raw_topic_count,
@@ -425,24 +447,26 @@ def _invoke_bedrock(articles: list[dict[str, Any]]) -> tuple[dict[str, Any], dic
         )
         return parsed, total_usage
 
-    raise RuntimeError("Bedrock processing ended without a result")
+    raise RuntimeError(f"Bedrock {stage} processing ended without a result")
 
-def _validate_and_enrich(model_output: dict[str, Any], articles: list[dict[str, Any]]) -> list[dict[str, Any]]:
+
+def _validate_groupings(model_output: dict[str, Any], articles: list[dict[str, Any]]) -> list[dict[str, Any]]:
     raw_topics = model_output.get("topics")
     if not isinstance(raw_topics, list) or not raw_topics:
-        raise ValueError("Bedrock JSON contains no topics list")
+        raise ValueError("Bedrock grouping JSON contains no topics list")
 
     article_by_id = {article["id"]: article for article in articles}
     topics: list[dict[str, Any]] = []
     used_source_ids: set[str] = set()
 
-    for raw_topic in raw_topics[:MAX_CANDIDATE_TOPICS]:
+    # Do not truncate to MAX_CANDIDATE_TOPICS here. The model can exceed the requested
+    # count; truncating before country balancing can accidentally discard all Finnish
+    # candidates. A bounded safety limit is sufficient at this validation stage.
+    for raw_topic in raw_topics[:MAX_RAW_GROUPINGS]:
         if not isinstance(raw_topic, dict):
             continue
-        headline = _clean_text(str(raw_topic.get("headline_de", "")), 180)
-        summary = _clean_text(str(raw_topic.get("summary_de", "")), 900)
         source_ids = raw_topic.get("source_ids", [])
-        if not headline or not summary or not isinstance(source_ids, list):
+        if not isinstance(source_ids, list):
             continue
 
         valid_ids: list[str] = []
@@ -461,19 +485,18 @@ def _validate_and_enrich(model_output: dict[str, Any], articles: list[dict[str, 
         used_source_ids.update(valid_ids)
         sources = [
             {
+                "source_id": source_id,
                 "source": article_by_id[source_id]["source"],
                 "country": article_by_id[source_id]["country"],
                 "title": article_by_id[source_id]["title"],
+                "description": article_by_id[source_id]["description"],
                 "url": article_by_id[source_id]["url"],
                 "published_at": article_by_id[source_id]["published_at"],
             }
             for source_id in valid_ids
         ]
-
         topics.append(
             {
-                "headline_de": headline,
-                "summary_de": summary,
                 "countries": sorted({source["country"] for source in sources}),
                 "source_count": len({source["source"] for source in sources}),
                 "article_count": len(sources),
@@ -482,13 +505,7 @@ def _validate_and_enrich(model_output: dict[str, Any], articles: list[dict[str, 
         )
 
     if not topics:
-        raise ValueError("No valid topics remained after Bedrock output validation")
-    if len(topics) < MIN_CANDIDATE_TOPICS:
-        LOGGER.warning(
-            "Only %d valid candidate topics remained; requested minimum is %d when enough distinct input topics exist",
-            len(topics),
-            MIN_CANDIDATE_TOPICS,
-        )
+        raise ValueError("No valid topic groupings remained after Bedrock output validation")
     return topics
 
 
@@ -505,9 +522,126 @@ def _latest_epoch(topic: dict[str, Any]) -> float:
 
 
 def _topic_sort_key(topic: dict[str, Any]) -> tuple[int, int, float]:
-    # Ranking is intentionally deterministic: breadth across distinct media first,
-    # then number of matching feed items, then recency.
     return (topic["source_count"], topic["article_count"], _latest_epoch(topic))
+
+
+def _candidate_pool(groupings: list[dict[str, Any]], articles: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+    ranked = sorted(groupings, key=_topic_sort_key, reverse=True)
+    pool: list[dict[str, Any]] = []
+    markers: set[int] = set()
+
+    def add(topic: dict[str, Any]) -> None:
+        marker = id(topic)
+        if marker not in markers and len(pool) < MAX_CANDIDATE_TOPICS:
+            pool.append(topic)
+            markers.add(marker)
+
+    # Reserve candidate capacity for each country before filling by overall rank.
+    for country in ("SE", "FI"):
+        while sum(country in topic["countries"] for topic in pool) < MIN_CANDIDATES_PER_COUNTRY:
+            candidate = next(
+                (topic for topic in ranked if country in topic["countries"] and id(topic) not in markers),
+                None,
+            )
+            if candidate is None:
+                break
+            add(candidate)
+
+    for topic in ranked:
+        add(topic)
+        if len(pool) >= MAX_CANDIDATE_TOPICS:
+            break
+
+    # If the model still supplied too few balanced groups, fill deterministically
+    # with recent unused feed items. This does not invent a topic: each fallback is
+    # simply one real article represented as its own candidate.
+    used_ids = {source["source_id"] for topic in pool for source in topic["sources"]}
+    article_by_id = {article["id"]: article for article in articles}
+
+    def article_recency(article: dict[str, Any]) -> float:
+        raw = article.get("published_at")
+        parsed = _parse_datetime(raw) if raw else None
+        return parsed.timestamp() if parsed else 0.0
+
+    available = sorted(
+        [article for article in articles if article["id"] not in used_ids],
+        key=article_recency,
+        reverse=True,
+    )
+    fallback_added = 0
+
+    def add_singleton(article: dict[str, Any]) -> None:
+        nonlocal fallback_added
+        if len(pool) >= MAX_CANDIDATE_TOPICS or article["id"] in used_ids:
+            return
+        source = {
+            "source_id": article["id"],
+            "source": article["source"],
+            "country": article["country"],
+            "title": article["title"],
+            "description": article["description"],
+            "url": article["url"],
+            "published_at": article["published_at"],
+        }
+        pool.append(
+            {
+                "countries": [article["country"]],
+                "source_count": 1,
+                "article_count": 1,
+                "sources": [source],
+            }
+        )
+        used_ids.add(article["id"])
+        fallback_added += 1
+
+    for country in ("SE", "FI"):
+        while sum(country in topic["countries"] for topic in pool) < MIN_CANDIDATES_PER_COUNTRY:
+            article = next((item for item in available if item["country"] == country and item["id"] not in used_ids), None)
+            if article is None:
+                break
+            add_singleton(article)
+
+    for article in available:
+        if len(pool) >= MIN_CANDIDATE_TOPICS:
+            break
+        add_singleton(article)
+
+    pool.sort(key=_topic_sort_key, reverse=True)
+    return pool[:MAX_CANDIDATE_TOPICS], fallback_added
+
+
+def _select_and_rank_topics(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    ranked_candidates = sorted(candidates, key=_topic_sort_key, reverse=True)
+    selected: list[dict[str, Any]] = []
+    selected_markers: set[int] = set()
+
+    def add(topic: dict[str, Any]) -> None:
+        marker = id(topic)
+        if marker not in selected_markers and len(selected) < MAX_TOPICS:
+            selected.append(topic)
+            selected_markers.add(marker)
+
+    for country in ("SE", "FI"):
+        while sum(country in topic["countries"] for topic in selected) < MIN_TOPICS_PER_COUNTRY:
+            candidate = next(
+                (
+                    topic
+                    for topic in ranked_candidates
+                    if country in topic["countries"] and id(topic) not in selected_markers
+                ),
+                None,
+            )
+            if candidate is None:
+                break
+            add(candidate)
+
+    for topic in ranked_candidates:
+        add(topic)
+        if len(selected) >= MAX_TOPICS:
+            break
+
+    selected.sort(key=_topic_sort_key, reverse=True)
+    return selected
 
 
 def _strip_country_prefix(headline: str) -> str:
@@ -530,44 +664,43 @@ def _country_prefix(countries: list[str]) -> str:
     return "Nordics"
 
 
-def _select_and_rank_topics(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    ranked_candidates = sorted(candidates, key=_topic_sort_key, reverse=True)
-    selected: list[dict[str, Any]] = []
-    selected_markers: set[int] = set()
+def _normalized_for_compare(text: str) -> str:
+    return re.sub(r"\s+", " ", unicodedata.normalize("NFKC", text).casefold()).strip()
 
-    def add(topic: dict[str, Any]) -> None:
-        marker = id(topic)
-        if marker not in selected_markers and len(selected) < MAX_TOPICS:
-            selected.append(topic)
-            selected_markers.add(marker)
 
-    # Guarantee meaningful representation of both countries when the candidate
-    # set contains enough suitable topics. Cross-country topics count for both.
-    for country in ("SE", "FI"):
-        while sum(country in topic["countries"] for topic in selected) < MIN_TOPICS_PER_COUNTRY:
-            candidate = next(
-                (
-                    topic
-                    for topic in ranked_candidates
-                    if country in topic["countries"] and id(topic) not in selected_markers
-                ),
-                None,
-            )
-            if candidate is None:
-                break
-            add(candidate)
+def _apply_german_text(selected: list[dict[str, Any]], model_output: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_topics = model_output.get("topics")
+    if not isinstance(raw_topics, list):
+        raise ValueError("Bedrock text JSON contains no topics list")
 
-    # Fill remaining slots strictly according to the deterministic ranking.
-    for topic in ranked_candidates:
-        add(topic)
-        if len(selected) >= MAX_TOPICS:
-            break
+    expected = {topic["topic_id"]: topic for topic in selected}
+    text_by_id: dict[str, tuple[str, str]] = {}
+    for item in raw_topics:
+        if not isinstance(item, dict):
+            continue
+        topic_id = item.get("topic_id")
+        if topic_id not in expected or topic_id in text_by_id:
+            continue
+        headline = _clean_text(str(item.get("headline_de", "")), 180)
+        summary = _clean_text(str(item.get("summary_de", "")), 900)
+        if not headline or not summary:
+            continue
 
-    selected.sort(key=_topic_sort_key, reverse=True)
+        # Guard against the failure observed in testing: a supposedly German
+        # headline must not simply be an unchanged Swedish/Finnish source title.
+        source_titles = {_normalized_for_compare(source["title"]) for source in expected[topic_id]["sources"]}
+        if _normalized_for_compare(headline) in source_titles:
+            raise ValueError(f"Bedrock text output copied an untranslated source title for {topic_id}")
+        text_by_id[topic_id] = (headline, summary)
+
+    missing = [topic_id for topic_id in expected if topic_id not in text_by_id]
+    if missing:
+        raise ValueError(f"Bedrock text output is incomplete; missing topic IDs: {','.join(missing)}")
 
     result: list[dict[str, Any]] = []
     for rank, topic in enumerate(selected, start=1):
-        clean_headline = _strip_country_prefix(topic["headline_de"])
+        headline, summary = text_by_id[topic["topic_id"]]
+        clean_headline = _strip_country_prefix(headline)
         latest_published_at = max(
             (source.get("published_at") for source in topic["sources"] if source.get("published_at")),
             default=None,
@@ -576,17 +709,18 @@ def _select_and_rank_topics(candidates: list[dict[str, Any]]) -> list[dict[str, 
             {
                 "rank": rank,
                 "headline_de": f"{_country_prefix(topic['countries'])}: {clean_headline}",
-                "summary_de": topic["summary_de"],
+                "summary_de": summary,
                 "countries": topic["countries"],
                 "source_count": topic["source_count"],
                 "article_count": topic["article_count"],
                 "latest_published_at": latest_published_at,
-                "sources": topic["sources"],
+                "sources": [
+                    {key: value for key, value in source.items() if key not in {"source_id", "description"}}
+                    for source in topic["sources"]
+                ],
             }
         )
-
     return result
-
 
 def _write_report(report: dict[str, Any], report_date: str) -> tuple[str, str]:
     payload = json.dumps(report, ensure_ascii=False, indent=2).encode("utf-8")
@@ -617,9 +751,23 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     LOGGER.info("Nordic News Radar run started: %s", now_utc.isoformat())
 
     articles, failures, successful_by_country = _collect_articles(now_utc)
-    model_output, usage = _invoke_bedrock(articles)
-    candidates = _validate_and_enrich(model_output, articles)
-    topics = _select_and_rank_topics(candidates)
+
+    grouping_output, grouping_usage = _converse_json(
+        _build_grouping_prompt(articles),
+        stage="Bedrock grouping",
+        max_tokens=2200,
+    )
+    groupings = _validate_groupings(grouping_output, articles)
+    candidates, fallback_singletons_added = _candidate_pool(groupings, articles)
+    selected = _select_and_rank_topics(candidates)
+
+    text_output, text_usage = _converse_json(
+        _build_text_prompt(selected),
+        stage="Bedrock German text",
+        max_tokens=3000,
+    )
+    topics = _apply_german_text(selected, text_output)
+    total_bedrock_tokens = grouping_usage.get("totalTokens", 0) + text_usage.get("totalTokens", 0)
 
     report = {
         "generated_at": now_utc.isoformat().replace("+00:00", "Z"),
@@ -633,9 +781,12 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             "failed": failures,
         },
         "selection": {
+            "raw_valid_groupings": len(groupings),
             "candidate_topics": len(candidates),
+            "fallback_singletons_added": fallback_singletons_added,
             "min_candidate_topics_requested": MIN_CANDIDATE_TOPICS,
             "max_candidate_topics_requested": MAX_CANDIDATE_TOPICS,
+            "min_candidates_per_country": MIN_CANDIDATES_PER_COUNTRY,
             "max_topics": MAX_TOPICS,
             "min_topics_per_country": MIN_TOPICS_PER_COUNTRY,
             "ranking": ["distinct_sources", "article_count", "recency"],
@@ -645,13 +796,15 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     archive_key, latest_key = _write_report(report, report["report_date"])
     LOGGER.info(
-        "Run completed: %d articles, %d candidates, %d selected topics, archive=%s, latest=%s, Bedrock total tokens=%s",
+        "Run completed: %d articles, %d valid groupings, %d candidates, %d selected topics, "
+        "archive=%s, latest=%s, Bedrock total tokens=%s",
         len(articles),
+        len(groupings),
         len(candidates),
         len(topics),
         archive_key,
         latest_key,
-        usage.get("totalTokens"),
+        total_bedrock_tokens,
     )
 
     return {
