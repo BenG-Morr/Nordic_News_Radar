@@ -1,6 +1,6 @@
 # Nordic News Radar – Terraform-Infrastruktur
 
-Erster IaC-Entwurf für Phase 2 des IU-Projekts im Kurs Cloud Programming.
+Erster IaC-Entwurf für Phase 2 des IU-Projekts im Kurs Cloud Programming
 
 ## Architektur
 
