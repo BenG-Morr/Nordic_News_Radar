@@ -1,6 +1,6 @@
 # Nordic News Radar – Terraform-Infrastruktur
 
-Erster IaC-Entwurf für Phase 2 des IU-Portfolios „Cloud Programming“.
+Erster IaC-Entwurf für Phase 2 des IU-Projekts im Kurs Cloud Programming.
 
 ## Architektur
 
@@ -12,7 +12,7 @@ Terraform stellt die vereinbarte AWS-Infrastruktur bereit:
 - Archivdateien unter `data/archive/` werden nach 14 Tagen gelöscht; `data/latest.json` bleibt bestehen.
 - CloudFront liefert Frontend und Daten über HTTPS aus. `/data/*` wird an den Daten-Bucket geroutet.
 - Origin Access Control hält beide S3-Buckets privat.
-- CloudWatch Logs speichert Lambda-Protokolle 14 Tage.
+- CloudWatch Logs speichert Lambda-Protokolle für 14 Tage.
 - AWS Budgets warnt bei 1 USD und 3 USD tatsächlichen Kosten sowie bei einer Prognose über dem 5-USD-Monatsbudget.
 
 ## Sicherheit und Reproduzierbarkeit
@@ -56,7 +56,3 @@ terraform destroy
 ```
 
 `force_destroy_buckets = true` ist für dieses kurzlebige Kursprojekt voreingestellt, damit auch nichtleere Test-Buckets beim Aufräumen entfernt werden. Für ein produktives System wäre diese Einstellung normalerweise zu restriktiv bzw. zu riskant und sollte auf `false` gesetzt werden.
-
-## Noch nicht Teil dieses Schrittes
-
-`lambda_src/handler.py` ist bewusst nur ein Smoke-Test-Handler. Die eigentliche Feed-Verarbeitung, Deduplizierung, der Nova-Micro-Aufruf und das Schreiben von `latest.json` plus Tagesarchiv werden im nächsten Umsetzungsschritt ergänzt. Ebenso wird das Platzhalter-Frontend später durch das eigentliche responsive Dashboard ersetzt.
